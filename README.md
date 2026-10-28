@@ -41,6 +41,20 @@ python source/image_retrieval/serve.py --profile kaggle
 
 Mở **http://127.0.0.1:8100/images**. Chưa có DRES thì chọn **Luyện tập**.
 
+## Gắn Codex cho chat
+
+Cài [Codex CLI](https://developers.openai.com/codex/cli/) trên máy chạy API:
+
+```powershell
+npm install -g @openai/codex
+codex login
+codex login status
+```
+
+Đăng nhập bằng tài khoản ChatGPT có quyền dùng `gpt-6-luna`. Nếu máy đã đăng nhập Codex CLI thì chỉ cần kiểm tra `codex login status`. Backend tự gọi CLI khi gửi chat (`Ctrl+A`), dùng được với cả hai profile, không cần thêm OpenAI API key vào `.env`.
+
+Nếu API không tìm thấy CLI, đặt `CODEX_QUERY_EXECUTABLE` thành đường dẫn đầy đủ tới executable Codex trong `.env`, rồi khởi động lại API. Chưa cài/đăng nhập Codex vẫn dùng được tìm thủ công, embedding và reranker.
+
 ## Tiền xử lý trên Kaggle
 
 ```powershell
