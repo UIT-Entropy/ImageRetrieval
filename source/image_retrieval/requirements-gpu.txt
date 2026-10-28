@@ -1,0 +1,3 @@
+-r requirements-api.txt
+-r requirements-encoder.txt
+bitsandbytes>=0.48,<0.50
