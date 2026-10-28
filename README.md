@@ -17,6 +17,14 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 ```
 
+Cấu trúc backend được gom trong `source/image_retrieval/` và có entry point module:
+
+```powershell
+python -m source.image_retrieval --profile local --smoke
+```
+
+Điều này giúp chạy API theo kiểu package mà vẫn giữ nguyên cách chạy file script cũ như `python source/image_retrieval/serve.py`.
+
 Nếu chọn GPU Kaggle, điền `KAGGLE_API_TOKEN` và `KAGGLE_USERNAME` của bạn trong `.env` (Kaggle → Settings → API). `IMAGE_ENCODER_URL`/`IMAGE_ENCODER_KEY` được tạo tự động. Tải data không cần token; không commit `.env`.
 
 ## 2. Tải data đã xử lý
