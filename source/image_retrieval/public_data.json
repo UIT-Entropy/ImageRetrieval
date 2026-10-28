@@ -1,0 +1,14 @@
+{
+  "dataset": "quands/image-retrieval-kitchen-5k-cc3d917a",
+  "url": "https://www.kaggle.com/datasets/quands/image-retrieval-kitchen-5k-cc3d917a",
+  "file": "bundle.zip",
+  "sha256": "cc3d917abbb5bc3f085cfda21be73e798517358ca5fb50e9b82d9aa37d5d4663",
+  "bytes": 1543749602,
+  "images": 5000,
+  "objects": 111085,
+  "files": 116094,
+  "schema_version": 1,
+  "tree_sha256": "f1ef741d287ba57c727c146a79d341deeccccb67c62e348d3c6aaf3f5ec8fad7",
+  "dataset_version": 1,
+  "download_url": "https://github.com/UIT-Entropy/ImageRetrieval/releases/download/data-v1/bundle.zip"
+}

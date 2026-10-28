@@ -22,7 +22,7 @@ def authenticate():
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env', override=True)
     if not os.environ.get('KAGGLE_API_TOKEN'):
-        raise RuntimeError('Set KAGGLE_API_TOKEN in E:/System/.env')
+        raise RuntimeError('Set KAGGLE_API_TOKEN in the repository .env file')
     import kaggle
     api = kaggle.api
     username = api.get_config_value('username') or os.environ.get('KAGGLE_USERNAME')
