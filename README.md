@@ -1,7 +1,5 @@
 # ImageRetrieval
 
-Tìm ảnh bằng Qwen3-VL-Embedding-8B, object/màu/thời gian và Qwen3-VL-Reranker-2B. Hỗ trợ feedback, chat và DRES.
-
 ## 1. Cài đặt
 
 Cần Python 3.11–3.12 và Node.js 22+. Các lệnh dưới dùng PowerShell, chạy tại thư mục repo.
@@ -23,9 +21,7 @@ Cấu trúc backend được gom trong `source/image_retrieval/` và có entry p
 python -m source.image_retrieval --profile local --smoke
 ```
 
-Điều này giúp chạy API theo kiểu package mà vẫn giữ nguyên cách chạy file script cũ như `python source/image_retrieval/serve.py`.
-
-Nếu chọn GPU Kaggle, điền `KAGGLE_API_TOKEN` và `KAGGLE_USERNAME` của bạn trong `.env` (Kaggle → Settings → API). `IMAGE_ENCODER_URL`/`IMAGE_ENCODER_KEY` được tạo tự động. Tải data không cần token; không commit `.env`.
+Nếu chọn GPU Kaggle, điền `KAGGLE_API_TOKEN` và `KAGGLE_USERNAME` của bạn trong `.env` (Kaggle → Settings → API). `IMAGE_ENCODER_URL`/`IMAGE_ENCODER_KEY` được tạo tự động. 
 
 ## 2. Tải data đã xử lý
 
@@ -59,9 +55,7 @@ python source/image_retrieval/serve.py --profile kaggle --smoke
 python source/image_retrieval/serve.py --profile kaggle
 ```
 
-Mỗi người dùng notebook trong tài khoản Kaggle của mình. Phiên GPU/tunnel tối đa 2 giờ; hết phiên thì push/connect lại.
-
-Mở **http://127.0.0.1:8100/images**. Chưa có DRES thì chọn **Luyện tập**.
+Mở **http://127.0.0.1:8100/images**.
 
 ## 4. Gắn Codex cho chat
 
@@ -73,16 +67,3 @@ codex login status
 
 Đăng nhập ChatGPT có quyền dùng `gpt-6-luna`. Backend tự dùng Codex CLI khi gửi chat; không cần OpenAI API key. Nếu CLI không nằm trên PATH, điền `CODEX_QUERY_EXECUTABLE` trong `.env` và khởi động lại API.
 
-## Phím tắt và tìm ảnh
-
-- `Ctrl+S`: tìm thủ công. `Ctrl+A`: bật/tắt chat.
-- **Qwen reranker**: rerank top 20, cần text hoặc ảnh query.
-- Rê ảnh: like/dislike/submit. Inspector: `←`/`→`, **Tất cả frame**.
-- DRES: server URL → user/password hoặc Session ID → Evaluation ID. Submit nhanh dùng imageID làm media item.
-
-## Kiểm tra
-
-```powershell
-python -m unittest discover -s source/image_retrieval -p "test_*.py" -q
-npm --prefix frontend test
-```
