@@ -23,8 +23,8 @@ Lệnh tải data lấy bộ Castle5000 đã xử lý (5.000 ảnh, metadata, ob
 Local dùng multi-index đã dựng ở mục 3.2; không nạp Qwen8B. Cài PyTorch CUDA phù hợp driver/GPU, sau đó:
 
 ```powershell
-py -3.11 -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
-py -3.11 -m pip install -r source/image_retrieval/requirements-gpu.txt
+python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r source/image_retrieval/requirements-gpu.txt
 ```
 
 Trong `.env`, đặt `IMAGE_MULTI_INDEX` tới index local và giữ `IMAGE_LOCAL_MODEL_CACHE=2`. Qwen2B dùng NF4 4-bit; SigLIP2, EVA-CLIP và DFN-CLIP chạy FP16. Local chỉ cung cấp Qwen2B và các model nhỏ; Qwen8B chỉ có trong Kaggle profile.
