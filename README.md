@@ -87,7 +87,7 @@ npm --prefix frontend run build
 python -m source.image_retrieval --profile multi
 ```
 
-Mở **http://127.0.0.1:8100/images**. Ctrl+S mở tùy chọn model tìm kiếm, ensemble, số kết quả Top K và reranker K. Khi đổi từ 2 sang 3 API (hoặc ngược lại), cập nhật `IMAGE_GPU_WORKERS`, kết nối đủ slot rồi khởi động lại backend.
+Mở **http://127.0.0.1:8100/images**. Sau khi mở web hoặc reconnect worker, chạy thử mỗi model định dùng khoảng 2–3 lượt để làm ấm kết nối. Lượt đầu có thể chậm do worker/tunnel vừa khởi động; các lượt lặp cùng model và query sẽ nhanh hơn nhờ cache embedding local. Ctrl+S mở tùy chọn model tìm kiếm, ensemble, số kết quả Top K và reranker K. Khi đổi từ 2 sang 3 API (hoặc ngược lại), cập nhật `IMAGE_GPU_WORKERS`, kết nối đủ slot rồi khởi động lại backend.
 
 Đo p50, p95 và Recall@20 trên bộ query gán nhãn bằng:
 
@@ -95,7 +95,7 @@ Mở **http://127.0.0.1:8100/images**. Ctrl+S mở tùy chọn model tìm kiếm
 python source/image_retrieval/benchmark_search.py queries.json
 ```
 
-Mỗi mục trong file JSON có `query` và danh sách `image_ids` đúng nếu đã gán nhãn.
+Mỗi mục trong file JSON có `query` và danh sách `image_ids` đúng nếu đã gán nhãn. Lưu ý: với Kaggle, thời gian encode một query warm thường dưới một giây; độ trễ còn dao động theo tunnel. Ensemble gửi yêu cầu đồng thời, nhưng các model đặt chung một GPU sẽ lần lượt dùng GPU đó.
 
 ## 4. Gắn Codex cho chat
 

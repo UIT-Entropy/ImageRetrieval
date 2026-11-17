@@ -1,7 +1,8 @@
 """Route retrieval across the configured Kaggle workers and named vectors."""
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 import threading
@@ -32,6 +33,8 @@ class MultiSearch:
         self._session_local = threading.local()
         self._sessions = []
         self._sessions_lock = threading.Lock()
+        self._embedding_cache = OrderedDict()
+        self._embedding_cache_lock = threading.Lock()
 
     def _session(self):
         session = getattr(self._session_local, 'session', None)
@@ -49,6 +52,26 @@ class MultiSearch:
             sessions, self._sessions = self._sessions, []
         for session in sessions:
             session.close()
+
+    def _encode(self, name, text, image):
+        image_digest = hashlib.sha256(image.read_bytes()).hexdigest() if image else ''
+        cache_key = (name, text, image_digest)
+        with self._embedding_cache_lock:
+            vector = self._embedding_cache.get(cache_key)
+            if vector is not None:
+                self._embedding_cache.move_to_end(cache_key)
+                return vector
+
+        result = self.worker(name, 'encode', text, image)
+        vector = np.asarray(result['vector'], dtype=np.float32)
+        validate_vectors(vector[None, :], 1, MODELS[name]['dimension'])
+        vector.setflags(write=False)
+        with self._embedding_cache_lock:
+            self._embedding_cache[cache_key] = vector
+            self._embedding_cache.move_to_end(cache_key)
+            if len(self._embedding_cache) > 128:
+                self._embedding_cache.popitem(last=False)
+        return vector
 
     @staticmethod
     def routes(count):
@@ -100,9 +123,7 @@ class MultiSearch:
         if query.reference_id:
             vectors.append(np.asarray(stored[self.catalog.index[query.reference_id]][name]))
         if query.text.strip() or image:
-            result = self.worker(name, 'encode', query.text.strip(), image)
-            encoded = np.asarray(result['vector'], dtype=np.float32)
-            validate_vectors(encoded[None, :], 1, MODELS[name]['dimension'])
+            encoded = self._encode(name, query.text.strip(), image)
             vectors.append(encoded)
         value = np.zeros(MODELS[name]['dimension'], dtype=np.float32)
         if vectors:
