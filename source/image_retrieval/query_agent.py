@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 MODEL = 'gpt-6-luna'
 
@@ -55,29 +55,108 @@ def output_schema(context):
     },'required':['edits','clarification','warnings']}
 
 
+OBJECT_ALIASES = {
+    'nguoi': 'person', 'people': 'person', 'ao': 'shirt', 'ao so mi': 'shirt',
+    'ao khoac': 'jacket', 'quan': 'pants', 'tap de': 'apron',
+    'coc': 'cup', 'ly': 'cup', 'chai': 'bottle', 'bat': 'bowl', 'chen': 'bowl',
+    'dia': 'plate', 'thia': 'spoon', 'muong': 'spoon', 'nia': 'fork',
+    'dao': 'knife', 'noi': 'pot', 'chao': 'pan', 'am dun': 'kettle',
+    'bon rua': 'sink', 'voi nuoc': 'faucet', 'tu lanh': 'refrigerator',
+    'lo vi song': 'microwave', 'lo nuong': 'oven', 'bep': 'stove', 'thot': 'cutting board',
+}
+COLOR_ALIASES = {
+    'den': 'black', 'trang': 'white', 'xam': 'gray', 'do': 'red', 'cam': 'orange',
+    'vang': 'yellow', 'xanh la': 'green', 'xanh cyan': 'cyan', 'xanh duong': 'blue',
+    'tim': 'purple', 'hong': 'pink', 'nau': 'brown',
+}
+COUNT = r'dung|chinh xac|it nhat|toi thieu|toi da|nhieu nhat|hon|duoi|it hon'
+HOUR = r'(\d{1,2})(?: ?(?:h|gio))'
+
+
+def normalized(text):
+    plain = ''.join(c for c in unicodedata.normalize('NFD', text.lower())
+                    if unicodedata.category(c) != 'Mn').replace('đ', 'd')
+    return ' '.join(plain.strip().rstrip('.!').split())
+
+
 def local_edit(instruction, current, context):
-    """Only consume complete, unambiguous filter commands; never partial-match scenes."""
-    text = ''.join(c for c in unicodedata.normalize('NFD',instruction.lower()) if unicodedata.category(c) != 'Mn').replace('đ','d')
-    text = text.strip().rstrip('.!').strip()
+    """Consume complete clauses only, preserving unrelated search state."""
     query = current.model_dump()
-    if re.fullmatch(r'(?:bo|xoa) (?:loc )?mau',text):
-        for obj in query['objects']: obj['color'] = None
-        return query, 'Đã bỏ ràng buộc màu.'
-    match = re.fullmatch(r'(?:(?:them|doi thanh|chi|tim|loc) )?(?:(dung|chinh xac|it nhat|toi thieu|toi da|nhieu nhat|hon|duoi|it hon) )?(\d{1,2}) (nguoi|person|people)',text)
-    if not match or 'person' not in context['labels']: return None
-    mode,n = match[1],int(match[2])
-    minimum,maximum = n,n
-    if mode in ('it nhat','toi thieu'): maximum=None
-    elif mode in ('toi da','nhieu nhat'): minimum=0
-    elif mode=='hon': minimum,maximum=n+1,None
-    elif mode in ('duoi','it hon'):
-        if n==0: return None
-        minimum,maximum=0,n-1
-    obj={'label':'person','color':None,'min_count':minimum,'max_count':maximum,'count_source':'detected','min_color_fraction':.15}
-    # Preserve color-specific person filters and all unrelated constraints.
-    query['objects']=[f for f in query['objects'] if not(f['label']=='person' and f['color'] is None)]+[obj]
-    query['offset']=0
-    return query, 'Đã cập nhật số người (detection).'
+    labels = {normalized(label): label for label in context['labels']}
+    labels.update({alias: name for alias, name in OBJECT_ALIASES.items() if name in context['labels']})
+    colors = {normalized(color): color for color in context['colors']}
+    colors.update({alias: name for alias, name in COLOR_ALIASES.items() if name in context['colors']})
+    days = {normalized(day): day for day in context.get('days', [])}
+    changed = set()
+    for clause in re.split(r'\s*[,;\n]\s*', instruction.strip()):
+        text = normalized(clause)
+        if re.fullmatch(r'(?:bo|xoa) (?:loc )?mau', text):
+            for obj in query['objects']:
+                obj['color'] = None
+            continue
+        if re.fullmatch(r'(?:bo|xoa) (?:loc )?(?:gio|thoi gian)', text):
+            query.update(hour_from=None, hour_to=None)
+            continue
+        if re.fullmatch(r'(?:bo|xoa) (?:loc )?ngay', text):
+            query['day'] = None
+            continue
+        day = re.fullmatch(r'(?:(?:ngay|day) ?)(\d+)', text)
+        if day:
+            key = 'day' + day[1]
+            value = days.get(key) or days.get('day ' + day[1]) or days.get('ngay ' + day[1])
+            if value is None or 'day' in changed:
+                return None
+            query['day'] = value
+            changed.add('day')
+            continue
+        hours = re.fullmatch(r'(?:tu )?' + HOUR + r' ?(?:den|[-–]) ?' + HOUR, text)
+        single = re.fullmatch(r'(?:luc )?' + HOUR, text)
+        if hours or single:
+            start = int((hours or single)[1])
+            end = int(hours[2]) if hours else start
+            if not 0 <= start <= end <= 23 or 'hour' in changed:
+                return None
+            query.update(hour_from=start, hour_to=end)
+            changed.add('hour')
+            continue
+
+        match = re.fullmatch(
+            rf'(?:(them|doi thanh|chi|tim|loc|co|khong co) )?(?:({COUNT}) )?(?:(\d{{1,3}}) )?(.+)', text)
+        if not match:
+            return None
+        action, mode, number, phrase = match.groups()
+        label, color = labels.get(phrase), None
+        if label is None:
+            for alias in sorted(colors, key=len, reverse=True):
+                suffix = ' ' + alias
+                if phrase.endswith(suffix) and phrase[:-len(suffix)] in labels:
+                    label, color = labels[phrase[:-len(suffix)]], colors[alias]
+                    break
+        if label is None or (mode and number is None) or (action == 'khong co' and number is not None):
+            return None
+        minimum, maximum = (int(number), int(number)) if number else (1, None)
+        if action == 'khong co':
+            minimum, maximum = 0, 0
+        elif mode in ('it nhat', 'toi thieu'):
+            maximum = None
+        elif mode in ('toi da', 'nhieu nhat'):
+            minimum = 0
+        elif mode == 'hon':
+            minimum, maximum = minimum + 1, None
+        elif mode in ('duoi', 'it hon'):
+            minimum, maximum = 0, maximum - 1
+        key = (label, color)
+        if key in changed or minimum > 100 or (maximum is not None and not minimum <= maximum <= 100):
+            return None
+        changed.add(key)
+        previous = next((f for f in query['objects'] if (f['label'], f['color']) == key
+                         and f['count_source'] == 'detected'), None)
+        obj = {**(previous or {}), 'label': label, 'color': color, 'min_count': minimum,
+               'max_count': maximum, 'count_source': 'detected'}
+        query['objects'] = [f for f in query['objects'] if f is not previous] + [obj]
+
+    query['offset'] = 0
+    return query, 'Đã cập nhật bộ lọc.'
 
 
 class QueryAgent:
@@ -99,8 +178,12 @@ class QueryAgent:
         current = SearchRequest.model_validate(request.current)
         local = local_edit(request.instruction,current,context)
         if local:
-            query,message=local
-            query=SearchRequest.model_validate(query)
+            query, message = local
+            try:
+                query = SearchRequest.model_validate(query)
+            except ValidationError:
+                local = None
+        if local:
             return {'model':MODEL,'engine':'local','message':message,'warnings':[],
                 'needs_clarification':False,'query':query.model_dump(),'elapsedMs':round((time.monotonic()-started)*1000),
                 'usage':{'input_tokens':0,'output_tokens':0}}

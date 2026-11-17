@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowLeft, ArrowRight, Download, ImagePlus, Search, Sparkles, Star, ThumbsUp, ThumbsDown, Send, Grid3X3, Trash2, X } from 'lucide-react'
-import { imageApi, type DetectedObject, type ImageHit, type ImageObjectFilter, type ImageSearchRequest, type DRESSession } from '../api/imageSearch'
+import { imageApi, type DetectedObject, type EmbeddingModel, type ImageHit, type ImageObjectFilter, type ImageSearchRequest, type DRESSession } from '../api/imageSearch'
 import { Button, Spinner } from '../components/ui'
 import { RetryImage } from '../components/RetryImage'
-import { DRESAccess, DRESSubmit } from './DRESAccess'
+import { DRESAccess } from './DRESAccess'
 import './imageSearch.css'
 
-const emptyQuery: ImageSearchRequest = { text: '', objects: [], offset: 0, limit: 60 }
+const embeddingLabels: Record<EmbeddingModel, string> = {
+  siglip2: 'SigLIP2', eva: 'EVA-CLIP', dfn: 'DFN5B-CLIP', qwen2b: 'Qwen 2B', qwen8b: 'Qwen 8B',
+}
+const defaultEnsemble: EmbeddingModel[] = ['siglip2', 'eva', 'dfn']
+const emptyQuery: ImageSearchRequest = { text: '', objects: [], offset: 0, limit: 20, rerank_k: 3 }
 const shortlistKey = 'image-retrieval-shortlist-v1'
 const historyKey = 'image-retrieval-history-v1'
 function saved<T>(key: string, fallback: T): T {
@@ -30,7 +34,12 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
   const facets = useQuery({ queryKey: ['image-facets'], queryFn: imageApi.facets, retry: 1 })
   const [draft, setDraft] = useState<ImageSearchRequest>(emptyQuery)
   const [query, setQuery] = useState<ImageSearchRequest>(emptyQuery)
-  const results = useQuery({ queryKey: ['image-results', query], queryFn: () => imageApi.search(query), placeholderData: previous => previous, retry: false })
+  const [searchElapsedMs, setSearchElapsedMs] = useState<number | null>(null)
+  const results = useQuery({ queryKey: ['image-results', query], queryFn: async () => {
+    const started = performance.now()
+    try { return await imageApi.search(query) }
+    finally { setSearchElapsedMs(performance.now() - started) }
+  }, placeholderData: previous => previous, retry: false })
   const [columns, setColumns] = useState(5)
   const [fit, setFit] = useState<'cover' | 'contain'>('contain')
   const [shortlist, setShortlist] = useState<string[]>(() => saved(shortlistKey, []))
@@ -40,7 +49,8 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
   const [selected, setSelected] = useState<string | null>(null)
   const [active, setActive] = useState(0)
   const [submitMessage, setSubmitMessage] = useState('')
-  const quickSubmit = useMutation({ mutationFn: imageApi.dresSubmit, onSuccess: result => setSubmitMessage(`${result.submission ?? 'Đã gửi'}${result.description ? ` · ${result.description}` : ''}`), onError: error => setSubmitMessage(error.message) })
+  const submitting = useRef(false)
+  const quickSubmit = useMutation({ mutationFn: imageApi.dresSubmit, retry: false, onSettled: () => { submitting.current = false }, onSuccess: result => setSubmitMessage(`${result.submission ?? 'Đã gửi'}${result.description ? ` · ${result.description}` : ''}`), onError: error => setSubmitMessage(error.message) })
   const [preview, setPreview] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState('')
   const [agentInstruction, setAgentInstruction] = useState('')
@@ -57,7 +67,8 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
   useEffect(() => { if (panel === 'agent') chatInput.current?.focus(); if (panel === 'search') composerRef.current?.querySelector('textarea')?.focus() }, [panel])
   const fileInput = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLElement>(null)
-  const encoderAvailable = !!health.data && health.data.queryEncoder !== 'disabled'
+  const multiModel = health.data?.multiModel
+  const encoderAvailable = !!health.data && (multiModel || health.data.queryEncoder !== 'disabled')
   const upload = useMutation({ mutationFn: imageApi.upload })
 
   useEffect(() => { localStorage.setItem(shortlistKey, JSON.stringify(shortlist)) }, [shortlist])
@@ -90,9 +101,10 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
     setQuery(q => ({ ...q, ...patch })); setDraft(d => ({ ...d, ...patch }))
   }
   const submitImage = (imageID: string) => {
-    if (quickSubmit.isPending || !session.connected || !session.evaluation_id) return
+    if (submitting.current || !session.connected || !session.evaluation_id) return
+    submitting.current = true
     setSubmitMessage('')
-    quickSubmit.mutate({ image_id: imageID, media_item_name: imageID, collection: '', task_id: '' })
+    quickSubmit.mutate({ image_id: imageID })
   }
   const acceptImage = async (file?: File) => {
     if (!file) return
@@ -144,7 +156,10 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
         setMessages(m => [...m, { role: 'assistant', text: 'Điều kiện đã thay đổi trong lúc agent chạy. Gửi lại yêu cầu để sửa trên điều kiện mới nhất.' }]); return
       }
       setMessages(m => [...m, { role: 'assistant', warnings: answer.warnings, text: `${answer.message} · ${answer.engine === 'local' ? 'Cục bộ · ' : answer.engine === 'cache' ? 'Cache · ' : 'Luna · '}${(answer.elapsedMs/1000).toFixed(1)}s${answer.usage?.input_tokens !== undefined ? ` · ${answer.usage.input_tokens} input / ${answer.usage.output_tokens ?? 0} output token` : ''}` }])
-      if (!answer.needs_clarification) runSearch(answer.query)
+      if (!answer.needs_clarification) runSearch({
+        ...answer.query, search_mode: draft.search_mode,
+        embedding_models: draft.embedding_models, rerank_model: draft.rerank_model,
+      })
     } catch (error) { setMessages(m => [...m, { role: 'assistant', text: (error as Error).message }]) }
   }
   const exportSaved = () => {
@@ -170,6 +185,31 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
         <div className="row"><h2 className="grow">Tìm ảnh</h2><Button className="icon sm" aria-label="Thu gọn tìm kiếm" onClick={() => setPanel(null)}><X size={15} /></Button></div><span className="small muted">Qwen3-VL · 8B · Ctrl+S bật/tắt</span>
         {health.isError && <p role="alert" className="image-error">Không kết nối được backend ảnh. Chạy search_api.py ở cổng 8100.</p>}
         <form className="stack" onSubmit={event => { event.preventDefault(); runSearch() }}>
+            <label className="field">Model tìm kiếm<select value={draft.search_mode ?? 'fast'} onChange={e => setDraft(d => ({ ...d, search_mode: e.target.value as ImageSearchRequest['search_mode'] }))}>
+              <option value="fast">Nhanh · SigLIP2</option><option value="2b">Qwen 2B</option><option value="8b">Qwen 8B</option><option value="ensemble">Ensemble</option>
+            </select></label>
+            {draft.search_mode === 'ensemble' && <div className="row wrap">
+              {(Object.entries(embeddingLabels) as [EmbeddingModel, string][]).map(([name, label]) => {
+                const selected = draft.embedding_models ?? defaultEnsemble
+                const checked = selected.includes(name)
+                return <label key={name} className="row small"><input type="checkbox" checked={checked}
+                  disabled={checked && selected.length === 1}
+                  onChange={e => setDraft(d => ({ ...d, embedding_models: e.target.checked ? [...selected, name] : selected.filter(item => item !== name) }))} />{label}</label>
+              })}
+            </div>}
+            <label className="field">Reranker<select value={draft.rerank_model ?? (draft.rerank ? '2b' : 'off')}
+              onChange={e => setDraft(d => ({ ...d, rerank_model: e.target.value as ImageSearchRequest['rerank_model'] }))}>
+              <option value="off">Tắt</option><option value="2b">Qwen 2B</option><option value="8b">Qwen 8B</option>
+            </select></label>
+          <label className="field">Top K · số ảnh trả về<select value={draft.limit ?? 20}
+            onChange={e => setDraft(d => ({ ...d, limit: Number(e.target.value), offset: 0 }))}>
+            {[5, 10, 20, 40, 60, 120].map(value => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+          {(draft.rerank_model ?? (draft.rerank ? '2b' : 'off')) !== 'off' && <label className="field">Rerank K · số ảnh chấm lại<select value={draft.rerank_k ?? 5}
+            onChange={e => setDraft(d => ({ ...d, rerank_k: Number(e.target.value) }))}>
+            {[1, 3, 5, 10, 20, 50].map(value => <option key={value} value={value}>{value}</option>)}
+          </select></label>}
+          {!multiModel && <p className="small muted">Xem trước cấu hình model. Bật profile multi để áp dụng.</p>}
           <label className="field">Mô tả nội dung<textarea rows={4} value={draft.text} onChange={e => setDraft(d => ({ ...d, text: e.target.value }))} placeholder="Ví dụ: người áo đỏ đứng cạnh bồn rửa…" disabled={!encoderAvailable} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runSearch() } }} /></label>
           {!encoderAvailable && <p className="small muted">Chưa kết nối query encoder. Lọc dữ liệu và “Tìm tương tự” bằng ảnh trong tập đã dùng được.</p>}
           <div className="image-drop" tabIndex={0} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); void acceptImage(e.dataTransfer.files[0]) }} onPaste={e => { const file = Array.from(e.clipboardData.files).find(f => f.type.startsWith('image/')); if (file) { e.preventDefault(); void acceptImage(file) } }}>
@@ -197,18 +237,19 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
             {countOperator(f) === 'range' && <input aria-label={`Số lượng tối đa ${i+1}`} type="number" min={f.min_count} max={100} value={f.max_count ?? f.min_count} onChange={e => updateFilter(i, { max_count: Math.max(f.min_count, Math.min(100, Number(e.target.value))) })} />}
             </div><select aria-label={`Nguồn số đếm ${i+1}`} value={f.count_source ?? 'detected'} onChange={e => updateFilter(i, { count_source: e.target.value as 'detected' | 'metadata' })}><option value="detected">Detection mới · có màu</option><option value="metadata" disabled={!!f.color}>Metadata gốc · không có màu</option></select>
           </div>)}
-          <label className="row small"><input type="checkbox" checked={draft.rerank ?? false} disabled={!health.data?.queryReranker || health.data.queryReranker === 'disabled'} onChange={e => setDraft(d => ({ ...d, rerank: e.target.checked }))} />Qwen reranker</label>
+          {!multiModel && <label className="row small"><input type="checkbox" checked={draft.rerank ?? false} disabled={!health.data?.queryReranker || health.data.queryReranker === 'disabled'} onChange={e => setDraft(d => ({ ...d, rerank: e.target.checked }))} />Qwen reranker</label>}
           <Button className="primary" type="submit" disabled={upload.isPending || (!!draft.query_asset && !encoderAvailable)}>{results.isFetching ? <Spinner /> : <Search size={16} />}Tìm ảnh</Button>
           <Button type="button" onClick={() => { clearImage(); setOnlySaved(false); runSearch(emptyQuery, false) }}>Xóa điều kiện</Button>
         </form>
       </aside>}
       <section className="image-results" ref={resultsRef}>
-        <div className="row image-results-toolbar"><div className="grow"><h1>{onlySaved ? 'Shortlist' : 'Khám phá ảnh'}</h1><span className="small muted">{results.data ? `${results.data.total.toLocaleString()} kết quả · ${results.data.reranked ? 'Qwen reranker' : results.data.ranked ? 'cosine similarity' : 'thứ tự ngày / giờ / frame'}` : 'Đang tải…'}</span></div>
+        <div className="row image-results-toolbar"><div className="grow"><h1>{onlySaved ? 'Shortlist' : 'Khám phá ảnh'}</h1><span className="small muted">{results.data ? `${results.data.total.toLocaleString()} kết quả · ${results.data.reranked ? 'Qwen reranker' : results.data.ranked ? 'cosine similarity' : 'thứ tự ngày / giờ / frame'}${searchElapsedMs == null ? '' : ` · API ${(searchElapsedMs / 1000).toFixed(1)}s`}` : 'Đang tải…'}</span></div>
           <label className="row small">Cột <input aria-label="Số cột" type="range" min={3} max={8} value={columns} onChange={e => setColumns(Number(e.target.value))} /></label>
           <Button className="sm" onClick={() => setFit(f => f === 'contain' ? 'cover' : 'contain')}>{fit}</Button>
         </div>
         {((query.positive_ids?.length ?? 0) + (query.negative_ids?.length ?? 0) > 0) && <div className="row image-feedback-summary"><ThumbsUp size={13} />{query.positive_ids?.length ?? 0}<ThumbsDown size={13} />{query.negative_ids?.length ?? 0}<Button className="sm" onClick={resetFeedback}>Bỏ feedback</Button>{results.isFetching && <Spinner />}</div>}
         {submitMessage && <div className="row image-submit-status" role="status"><span className="grow">{submitMessage}</span><Button className="icon sm" aria-label="Ẩn trạng thái nộp bài" onClick={() => setSubmitMessage('')}><X size={13} /></Button></div>}
+        {!!results.data?.failedModels?.length && <p role="status">Ensemble bỏ qua {results.data.failedModels.map(name => embeddingLabels[name]).join(', ')}.</p>}
         {results.isError && <div className="empty-state image-error" role="alert">{results.error.message}<Button onClick={() => void results.refetch()}>Thử lại</Button></div>}
         {results.isPending && <div className="empty-state"><Spinner />Đang tải ảnh…</div>}
         {results.data?.total === 0 && <div className="empty-state">Không có ảnh phù hợp. Thử giảm số điều kiện hoặc bỏ màu.</div>}
@@ -241,12 +282,12 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
         </form>
       </aside>}
     </main>
-    <ImageInspector session={session} id={selected} onClose={() => setSelected(null)} onSelect={setSelected} onSimilar={similar} saved={!!selected && shortlist.includes(selected)} onSave={() => selected && toggleSaved(selected)} />
+    <ImageInspector canSubmit={!!session.connected && !!session.evaluation_id && !quickSubmit.isPending} submitting={quickSubmit.isPending} onSubmit={submitImage} submitMessage={submitMessage} id={selected} onClose={() => setSelected(null)} onSelect={setSelected} onSimilar={similar} saved={!!selected && shortlist.includes(selected)} onSave={() => selected && toggleSaved(selected)} />
     <Dialog.Root open={historyOpen} onOpenChange={setHistoryOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content"><Dialog.Title>Lịch sử tìm ảnh</Dialog.Title><Dialog.Description className="muted small">Lưu trên trình duyệt này. Ảnh upload không được lưu lại.</Dialog.Description><div className="stack">{history.length === 0 && <p>Chưa có truy vấn.</p>}{history.map((q, i) => <Button key={i} onClick={() => { setPreview(null); setOnlySaved(false); runSearch(q, false); setHistoryOpen(false) }}>{q.text || q.reference_id || `${q.objects.length} điều kiện object · ${q.day ?? 'mọi ngày'} · ${q.hour_from ?? '…'}–${q.hour_to ?? '…'}h`}</Button>)}</div><Dialog.Close asChild><Button>Đóng</Button></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>
 }
 
-function ImageInspector({ session, id, onClose, onSelect, onSimilar, saved, onSave }: { session: DRESSession; id: string | null; onClose: () => void; onSelect: (id: string) => void; onSimilar: (id: string) => void; saved: boolean; onSave: () => void }) {
+function ImageInspector({ canSubmit, submitting, onSubmit, submitMessage, id, onClose, onSelect, onSimilar, saved, onSave }: { canSubmit: boolean; submitting: boolean; onSubmit: (id: string) => void; submitMessage: string; id: string | null; onClose: () => void; onSelect: (id: string) => void; onSimilar: (id: string) => void; saved: boolean; onSave: () => void }) {
   const detail = useQuery({ queryKey: ['image-detail', id], queryFn: () => imageApi.detail(id!), enabled: !!id })
   const [object, setObject] = useState<DetectedObject | null>(null)
   const [maskOn, setMaskOn] = useState(false)
@@ -289,7 +330,8 @@ function ImageInspector({ session, id, onClose, onSelect, onSimilar, saved, onSa
         {video.isPending && <Spinner />}{video.isError && <p role="alert">{video.error.message}</p>}
         {video.data?.items.map(hit => <button key={hit.imageID} aria-label={`Xem frame ${hit.frame}`} className={hit.imageID === id ? 'active' : ''} onClick={() => inspect(hit.imageID)}><img src={hit.thumbnailUrl} alt={hit.imageID} loading="lazy" /><span>f{hit.frame}</span></button>)}
       </div> : <><div className="image-inspector-body"><div className="image-inspector-picture"><img src={data.imageUrl} alt={data.imageID} />{object && maskOn && <img className="image-mask-layer" src={`/api/images/mask/${encodeURIComponent(object.instance_id)}`} alt={`Mask ${object.label}`} />}</div><aside className="stack image-inspector-meta">
-        <div className="row wrap"><Button className="primary" onClick={() => onSimilar(data.imageID)}><Search size={14} />Tìm tương tự</Button><Button onClick={onSave}><Star size={14} fill={saved ? 'currentColor' : 'none'} />{saved ? 'Đã lưu' : 'Lưu'}</Button><DRESSubmit key={data.imageID} imageID={data.imageID} session={session} /></div>
+        <div className="row wrap"><Button className="primary" onClick={() => onSimilar(data.imageID)}><Search size={14} />Tìm tương tự</Button><Button onClick={onSave}><Star size={14} fill={saved ? 'currentColor' : 'none'} />{saved ? 'Đã lưu' : 'Lưu'}</Button><Button disabled={!canSubmit} onClick={() => onSubmit(data.imageID)}>{submitting ? <Spinner /> : <Send size={14} />}Gửi DRES</Button></div>
+        {submitMessage && <p role="status">{submitMessage}</p>}
         <strong>{data.objects.length} objects</strong>
         <div className="image-object-list">{data.objects.map(obj => <button key={obj.instance_id} className={`image-object-row ${object?.instance_id === obj.instance_id ? 'active' : ''}`} onClick={() => { setObject(obj); setMaskOn(true) }}><strong>{obj.label}</strong><span>{(obj.confidence*100).toFixed(0)}%</span><span>{Object.entries(obj.colors).filter(([, fraction]) => fraction >= .1).map(([name, fraction]) => `${name} ${(fraction*100).toFixed(0)}%`).join(' · ')}</span></button>)}</div>
         {object && <Button className="sm" onClick={() => setMaskOn(v => !v)}>{maskOn ? 'Ẩn' : 'Hiện'} mask {object.label}</Button>}

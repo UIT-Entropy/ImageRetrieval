@@ -12,16 +12,19 @@ export type ImageDetail = ImageHit & { objects: DetectedObject[]; neighbors: Ima
 export type DRESSession = { connected: boolean; server?: string; username?: string; evaluation_id?: string }
 export type DRESRun = { id: string; name: string; status: string }
 export type ImageObjectFilter = { label: string; color?: string | null; min_count: number; max_count?: number | null; count_source?: 'detected' | 'metadata'; min_color_fraction?: number }
+export type EmbeddingModel = 'qwen8b' | 'qwen2b' | 'siglip2' | 'eva' | 'dfn'
 export type ImageSearchRequest = {
   text: string; reference_id?: string; query_asset?: string; day?: string; source?: string
   hour_from?: number; hour_to?: number; objects: ImageObjectFilter[]; shortlist_ids?: string[]
+  search_mode?: 'fast' | '2b' | '8b' | 'ensemble'; embedding_models?: EmbeddingModel[]
+  rerank_model?: 'off' | '2b' | '8b'
   rerank?: boolean; rerank_k?: number
   positive_ids?: string[]; negative_ids?: string[]
   offset: number; limit: number
 }
-export type ImageResults = { items: ImageHit[]; total: number; ranked: boolean; reranked?: boolean; offset: number; limit: number }
+export type ImageResults = { items: ImageHit[]; total: number; ranked: boolean; reranked?: boolean; failedModels?: EmbeddingModel[]; offset: number; limit: number }
 export type ImageFacets = { days: string[]; sources: string[]; labels: string[]; colors: string[]; hours: number[] }
-export type ImageHealth = { status: string; images: number; objects: number; queryEncoder: string; queryReranker?: string; model: string }
+export type ImageHealth = { status: string; images: number; objects: number; queryEncoder: string; queryReranker?: string; model: string; multiModel?: boolean }
 export type AgentAnswer = { model: string; engine?: 'local' | 'cache' | 'luna'; usage?: { input_tokens?: number; output_tokens?: number }; message: string; warnings: string[]; needs_clarification: boolean; query: ImageSearchRequest; elapsedMs: number }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -42,7 +45,7 @@ export const imageApi = {
   dresRuns: () => request<DRESRun[]>('/dres/evaluations'),
   dresSelect: (evaluation_id: string) => request<DRESSession>('/dres/evaluation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ evaluation_id }) }),
   dresLogout: () => request<DRESSession>('/dres/logout', { method: 'POST' }),
-  dresSubmit: (body: { image_id: string; media_item_name: string; collection: string; task_id: string }) => request<{ http_status: number; status: boolean; submission?: string; description: string }>('/dres/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  dresSubmit: (body: { image_id: string }) => request<{ http_status: number; status: boolean; submission?: string; description: string }>('/dres/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   video: (id: string) => request<{ videoID: string; items: ImageHit[] }>(`/video/${encodeURIComponent(id)}`),
   health: () => request<ImageHealth>('/health'),
   facets: () => request<ImageFacets>('/facets'),

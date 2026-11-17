@@ -1,4 +1,4 @@
-"""Pinned Qwen VL reranking and sequential GPU model lifecycle."""
+"""Pinned Qwen VL reranking and batched GPU model lifecycle."""
 from __future__ import annotations
 
 import gc
@@ -36,22 +36,26 @@ def load_options():
 
 
 class QwenReranker:
-    def __init__(self):
+    def __init__(self, model_id=MODEL, revision=REVISION, options=None):
         import torch
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download, snapshot_download
         from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-        path=hf_hub_download(MODEL,'scripts/qwen3_vl_reranker.py',revision=REVISION,token=False)
+        path=hf_hub_download(model_id,'scripts/qwen3_vl_reranker.py',revision=revision,token=False)
         spec=importlib.util.spec_from_file_location('pinned_qwen_reranker',path)
         helper=importlib.util.module_from_spec(spec)
         sys.modules[spec.name]=helper
         spec.loader.exec_module(helper)
         # The upstream constructor calls .to(cuda); avoid collapsing device_map/offload.
-        lm=Qwen3VLForConditionalGeneration.from_pretrained(MODEL,revision=REVISION,token=False,
-            torch_dtype=torch.float16,attn_implementation='sdpa',**load_options()).eval()
+        lm=Qwen3VLForConditionalGeneration.from_pretrained(model_id,revision=revision,token=False,
+            torch_dtype=torch.float16,attn_implementation='sdpa',**(options if options is not None else load_options())).eval()
         self.lm=lm
         self.formatter=helper.Qwen3VLReranker.__new__(helper.Qwen3VLReranker)
         f=self.formatter
-        f.processor=AutoProcessor.from_pretrained(MODEL,revision=REVISION,token=False,padding_side='left')
+        processor_dir = snapshot_download(
+            model_id, revision=revision, token=False,
+            allow_patterns=['*.json', '*.jinja', '*.txt', '*.model'],
+        )
+        f.processor = AutoProcessor.from_pretrained(processor_dir, padding_side='left')
         f.max_length=4096; f.min_pixels=4096; f.max_pixels=131072
         f.total_pixels=262144; f.fps=1; f.num_frames=1; f.max_frames=1
         f.default_instruction=INSTRUCTION
@@ -62,14 +66,30 @@ class QwenReranker:
     def score(self,text,image,documents):
         import torch
         f=self.formatter
+        pairs=[f.format_mm_instruction(text or None,image,None,None,document,None,
+                    instruction=INSTRUCTION,fps=1,max_frames=1) for document in documents]
+        batch_size=max(1,int(os.environ.get('QWEN_RERANK_BATCH_SIZE','4')))
+        device=self.lm.get_input_embeddings().weight.device
+
+        def score_batch(batch):
+            inputs=None
+            try:
+                inputs=f.tokenize(batch).to(device)
+                with torch.inference_mode():
+                    hidden=self.lm.model(**inputs,use_cache=False).last_hidden_state[:,-1]
+                    values=torch.sigmoid((hidden.float()*self.weight.to(hidden.device).float()).sum(-1))
+                return values.float().cpu().tolist()
+            except torch.cuda.OutOfMemoryError:
+                if len(batch)<=1:
+                    raise
+                del inputs
+                torch.cuda.empty_cache()
+                middle=len(batch)//2
+                return score_batch(batch[:middle])+score_batch(batch[middle:])
+
         scores=[]
-        for document in documents:
-            pair=f.format_mm_instruction(text or None,image,None,None,document,None,instruction=INSTRUCTION,fps=1,max_frames=1)
-            inputs=f.tokenize([pair]).to(self.lm.get_input_embeddings().weight.device)
-            with torch.inference_mode():
-                hidden=self.lm.model(**inputs,use_cache=False).last_hidden_state[:,-1]
-                value=torch.sigmoid((hidden.float()*self.weight.to(hidden.device).float()).sum(-1))
-            scores.append(float(value.item()))
+        for start in range(0,len(pairs),batch_size):
+            scores.extend(score_batch(pairs[start:start+batch_size]))
         return validate_scores(scores,len(documents))
 
 

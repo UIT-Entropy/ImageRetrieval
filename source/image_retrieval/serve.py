@@ -11,6 +11,10 @@ ROOT=Path(__file__).resolve().parents[2]
 
 def configure(profile):
     load_dotenv(ROOT/'.env',override=False)
+    if profile == 'multi':
+        if not os.environ.get('IMAGE_MULTI_INDEX'):
+            raise RuntimeError('Set IMAGE_MULTI_INDEX to the directory created by build_index.py')
+        return
     mode='local' if profile=='local' else 'remote'
     os.environ['IMAGE_ENCODER_MODE']=mode
     os.environ['IMAGE_RERANKER_MODE']=mode
@@ -24,10 +28,12 @@ def configure(profile):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--profile',choices=['local','kaggle'],required=True)
+    parser.add_argument('--profile',choices=['local','kaggle','multi'],required=True)
     parser.add_argument('--smoke',action='store_true',help='Encode one query and rerank one real image; do not start API')
     args=parser.parse_args()
     configure(args.profile)
+    if args.smoke and args.profile == 'multi':
+        parser.error('Start the multi API and benchmark the search endpoint')
     if args.smoke:
         from search_api import Catalog, QueryEncoder, HERE
         from reranker import GPUModels, QueryReranker

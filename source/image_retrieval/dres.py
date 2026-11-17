@@ -27,9 +27,6 @@ class Selection(BaseModel):
 
 class Submission(BaseModel):
     image_id: str = Field(min_length=1, max_length=200)
-    media_item_name: str = Field(min_length=1, max_length=300)
-    collection: str = Field(default='', max_length=200)
-    task_id: str = Field(default='', max_length=200)
 
 
 def server_url(value):
@@ -103,6 +100,9 @@ def install_dres(app, catalog):
         session = {'server':server,'token':token,'username':user['username'],
                    'evaluation_id':'','expires':time.monotonic()+TTL}
         runs = evaluations(session)
+        active_runs = [run for run in runs if run['status'] == 'ACTIVE']
+        if len(active_runs) == 1:
+            session['evaluation_id'] = active_runs[0]['id']
         key = secrets.token_urlsafe(32)
         with lock:
             for old in list(sessions):
@@ -141,13 +141,10 @@ def install_dres(app, catalog):
         session=state(request)
         if not session['evaluation_id']: raise HTTPException(422,'Chọn Evaluation ID trước khi gửi.')
         if body.image_id not in catalog().index: raise HTTPException(404,'Ảnh không tồn tại.')
-        answer={'mediaItemName':body.media_item_name.strip()}
-        if not answer['mediaItemName']: raise HTTPException(422,'Tên ảnh DRES không được trống.')
-        if body.collection.strip(): answer['mediaItemCollectionName']=body.collection.strip()
-        answer_set={'answers':[answer]}
-        if body.task_id.strip(): answer_set['taskId']=body.task_id.strip()
+        answer = {'mediaItemName': body.image_id, 'mediaItemCollectionName': 'castle5000'}
+        payload = {'answerSets': [{'answers': [answer]}]}
         status,result=remote(session['server'],'POST','/api/v2/submit/'+quote(session['evaluation_id'],safe=''),
-            session['token'],{'answerSets':[answer_set]})
+            session['token'],payload)
         # DRES acceptance is not equivalent to a CORRECT verdict.
         return {'http_status':status,'status':result.get('status'),
                 'submission':result.get('submission'),'description':str(result.get('description',''))[:1000]}

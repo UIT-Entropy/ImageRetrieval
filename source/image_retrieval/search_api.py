@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 import secrets
 import threading
+import time
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -55,13 +56,18 @@ class SearchRequest(BaseModel):
     shortlist_ids: list[str] | None = Field(default=None, max_length=5000)
     positive_ids: list[str] = Field(default_factory=list, max_length=100)
     negative_ids: list[str] = Field(default_factory=list, max_length=100)
+    search_mode: Literal['fast', '2b', '8b', 'ensemble'] | None = None
+    embedding_models: list[Literal['qwen8b', 'qwen2b', 'siglip2', 'eva', 'dfn']] | None = Field(default=None, min_length=1, max_length=5)
+    rerank_model: Literal['off', '2b', '8b'] | None = None
     rerank: bool = False
-    rerank_k: int = Field(default=20, ge=1, le=50)
+    rerank_k: int = Field(default=3, ge=1, le=50)
     offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=60, ge=1, le=120)
+    limit: int = Field(default=20, ge=1, le=120)
 
     @model_validator(mode='after')
     def validate_range(self):
+        if self.embedding_models and len(set(self.embedding_models)) != len(self.embedding_models):
+            raise ValueError('Model embedding bị trùng')
         if self.hour_from is not None and self.hour_to is not None and self.hour_from > self.hour_to:
             raise ValueError('Giờ bắt đầu phải nhỏ hơn hoặc bằng giờ kết thúc')
         if self.reference_id and self.query_asset:
@@ -87,7 +93,7 @@ def feedback_vector(cat, query, vector):
 
 
 class Catalog:
-    def __init__(self, artifacts: Path, data: Path):
+    def __init__(self, artifacts: Path, data: Path, index_dir=None):
         self.root = artifacts.resolve()
         self.data = data.resolve()
         manifest = json.loads((self.root / 'run_manifest.json').read_text(encoding='utf-8'))
@@ -96,12 +102,20 @@ class Catalog:
         for name, expected in manifest['outputs'].items():
             if digest_file(self.root / name) != expected:
                 raise ValueError(f'Artifact checksum mismatch: {name}')
-        self.rows = pq.read_table(self.root / 'images.parquet').to_pylist()
-        self.ids = json.loads((self.root / 'embedding_ids.json').read_text(encoding='utf-8'))
+        self.index_dir = index_dir
+        if index_dir is None:
+            self.rows = pq.read_table(self.root / 'images.parquet').to_pylist()
+            self.ids = json.loads((self.root / 'embedding_ids.json').read_text(encoding='utf-8'))
+            self.vectors = np.load(self.root / 'image_embeddings.npy', mmap_mode='r')
+            validate_vectors(self.vectors, len(self.ids), 4096)
+            objects = pq.read_table(self.root / 'objects.parquet').to_pylist()
+        else:
+            with self.database() as db:
+                self.rows = [json.loads(row[0]) for row in db.execute('SELECT metadata FROM images ORDER BY point_id')]
+                objects = [json.loads(row[0]) for row in db.execute('SELECT metadata FROM objects ORDER BY rowid')]
+            self.ids = [row['imageID'] for row in self.rows]
         if self.ids != [r['imageID'] for r in self.rows] or len(set(self.ids)) != len(self.ids):
             raise ValueError('Embedding IDs do not match metadata row order')
-        self.vectors = np.load(self.root / 'image_embeddings.npy', mmap_mode='r')
-        validate_vectors(self.vectors, len(self.ids), 4096)
         self.index = {key: i for i, key in enumerate(self.ids)}
         self.metadata_counts = {r['imageID']: json.loads(r.get('class_count', '{}')) for r in self.rows}
         self.config = json.loads((self.root / 'config.json').read_text(encoding='utf-8'))
@@ -109,7 +123,7 @@ class Catalog:
         if self.runtime['revision'] != self.config['embedding']['revision']:
             raise ValueError('Embedding runtime/model revision mismatch')
         self.objects = defaultdict(list)
-        for obj in pq.read_table(self.root / 'objects.parquet').to_pylist():
+        for obj in objects:
             if obj['imageID'] not in self.index:
                 raise ValueError('Unknown image in object table')
             obj['colors'] = json.loads(obj.pop('colors_json'))
@@ -169,10 +183,33 @@ class Catalog:
         if count is None: return False
         return count >= f.min_count and (f.max_count is None or count <= f.max_count)
 
-    def search(self, query: SearchRequest, vector=None):
-        candidates = []
+    def database(self):
+        import sqlite3
+        from contextlib import closing
+
+        return closing(sqlite3.connect((self.index_dir / 'catalog.sqlite3').resolve().as_uri() + '?mode=ro', uri=True))
+
+    def candidates(self, query):
         allowed = set(query.shortlist_ids) if query.shortlist_ids is not None else None
-        for i, row in enumerate(self.rows):
+        if getattr(self, 'index_dir', None) is None:
+            values = enumerate(self.rows)
+        else:
+            clauses, params = [], []
+            for column, operator, value in (
+                ('day', '=', query.day), ('source', '=', query.source),
+                ('hour', '>=', query.hour_from), ('hour', '<=', query.hour_to),
+            ):
+                if value is not None and value != '':
+                    clauses.append(f'{column} {operator} ?')
+                    params.append(value)
+            sql = 'SELECT point_id FROM images'
+            if clauses:
+                sql += ' WHERE ' + ' AND '.join(clauses)
+            with self.database() as db:
+                values = [(i, self.rows[i]) for (i,) in db.execute(sql + ' ORDER BY point_id', params)]
+
+        candidates = []
+        for i, row in values:
             image_id = row['imageID']
             if allowed is not None and image_id not in allowed:
                 continue
@@ -183,6 +220,10 @@ class Catalog:
             if any(not self.count_matches(image_id, f) for f in query.objects):
                 continue
             candidates.append(i)
+        return candidates
+
+    def search(self, query: SearchRequest, vector=None):
+        candidates = self.candidates(query)
         scores = {}
         if vector is not None:
             vector = np.asarray(vector, dtype=np.float32)
@@ -193,9 +234,12 @@ class Catalog:
                 values = np.asarray(self.vectors[candidates]) @ vector
                 scores = {i: float(v) for i, v in zip(candidates, values)}
                 candidates.sort(key=lambda i: (-scores[i], i))
+        return self.results(query, candidates, scores, vector is not None)
+
+    def results(self, query, candidates, scores, ranked):
         selected = candidates[query.offset:query.offset+query.limit]
         return {'total': len(candidates), 'offset': query.offset, 'limit': query.limit,
-                'ranked': vector is not None,
+                'ranked': ranked,
                 'items': [{**self.hit(self.ids[i], scores.get(i)),
                            'constraintCounts':[{'label':f.label,'color':f.color,'source':f.count_source,
                                                 'count':self.object_count(self.ids[i],f)} for f in query.objects]}
@@ -245,13 +289,39 @@ def create_app(artifacts=None, data=None):
         data = Path(os.environ.get('IMAGE_DATA_DIR', PROJECT / 'data'))
     @asynccontextmanager
     async def lifespan(app):
-        app.state.catalog = Catalog(Path(artifacts), Path(data))
+        directory = os.environ.get('IMAGE_MULTI_INDEX')
+        active = None
+        client = None
+        if directory:
+            from model_registry import EMBEDDERS, fingerprint
+            from qdrant_client import QdrantClient
+            from uuid import UUID
+
+            root = Path(directory)
+            manifest = json.loads((root / 'active.json').read_text(encoding='utf-8'))
+            if manifest['models'] != {name: fingerprint(name) for name in EMBEDDERS}:
+                raise ValueError('Active index model fingerprints differ')
+            if manifest['source'] != digest_file(Path(artifacts) / 'images.parquet'):
+                raise ValueError('Active index belongs to different image artifacts')
+            active = root / UUID(manifest['generation']).hex
+        app.state.catalog = Catalog(Path(artifacts), Path(data), active) if active else Catalog(Path(artifacts), Path(data))
+        app.state.multi = None
+        if active:
+            from multi_search import MultiSearch
+
+            client = QdrantClient(path=str(active / 'qdrant'))
+            app.state.multi = MultiSearch(app.state.catalog, client, HERE / '.work')
         from reranker import GPUModels, QueryReranker
         app.state.gpu = GPUModels(app.state.catalog.config['embedding'])
         app.state.encoder = QueryEncoder(app.state.catalog,app.state.gpu)
         app.state.reranker = QueryReranker(app.state.catalog,app.state.gpu)
         app.state.uploads = {}
-        yield
+        try:
+            yield
+        finally:
+            if client is not None:
+                app.state.multi.close()
+                client.close()
 
     app = FastAPI(title='Image Retrieval', lifespan=lifespan)
     key = os.environ.get('IMAGE_API_KEY', '')
@@ -274,7 +344,7 @@ def create_app(artifacts=None, data=None):
         cat = catalog()
         return {'status': 'ok', 'images': len(cat.ids), 'objects': sum(map(len, cat.objects.values())),
                 'queryEncoder': app.state.encoder.mode, 'queryReranker':app.state.reranker.mode,
-                'model': cat.config['embedding']['model_id']}
+                'model': cat.config['embedding']['model_id'], 'multiModel': bool(app.state.multi)}
 
     @app.get('/api/images/facets')
     def facets():
@@ -319,7 +389,16 @@ def create_app(artifacts=None, data=None):
 
     @app.post('/api/images/search')
     def search(query: SearchRequest):
+        started = time.perf_counter()
         cat = catalog()
+        if app.state.multi:
+            image = app.state.uploads.get(query.query_asset) if query.query_asset else None
+            if query.query_asset and image is None:
+                raise HTTPException(404, 'Ảnh query hết phiên; hãy upload lại')
+            result = app.state.multi.search(query, image)
+            if os.environ.get('IMAGE_DEBUG_TIMING') == '1':
+                print(f"TIMING search_total model={query.search_mode or 'fast'} results={query.limit} rerank_k={query.rerank_k} seconds={time.perf_counter()-started:.3f}", flush=True)
+            return result
         vector = None
         if query.reference_id:
             if query.reference_id not in cat.index:

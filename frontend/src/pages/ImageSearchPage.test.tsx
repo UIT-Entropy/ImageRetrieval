@@ -33,8 +33,14 @@ describe('image workbench entry and shortcuts', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Dislike a' }))
     await waitFor(() => expect(imageApi.search).toHaveBeenLastCalledWith(expect.objectContaining({ positive_ids: [], negative_ids: ['a'] })))
     fireEvent.click(await screen.findByRole('button', { name: 'Submit a' }))
-    await waitFor(() => expect(imageApi.dresSubmit).toHaveBeenCalledWith({ image_id: 'a', media_item_name: 'a', collection: '', task_id: '' }, expect.anything()))
+    await waitFor(() => expect(imageApi.dresSubmit).toHaveBeenCalledWith({ image_id: 'a' }, expect.anything()))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    vi.spyOn(imageApi, 'detail').mockResolvedValue({ ...hits[1], objects: [], neighbors: hits, originalDescription: '', videoFrameCount: 2, videoFramePosition: 1, previousImageID: 'a', nextImageID: null })
+    fireEvent.click(screen.getByRole('img', { name: 'b' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Gửi DRES' }))
+    await waitFor(() => expect(imageApi.dresSubmit).toHaveBeenCalledWith({ image_id: 'b' }, expect.anything()))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Đóng inspector' }))
     fireEvent.click(screen.getByRole('button', { name: 'Bỏ feedback' }))
     await waitFor(() => expect(imageApi.search).toHaveBeenLastCalledWith(expect.objectContaining({ positive_ids: [], negative_ids: [] })))
   })
@@ -92,9 +98,9 @@ describe('image workbench entry and shortcuts', () => {
     expect(screen.getByLabelText('Mô tả nội dung')).toHaveValue('Keep my scene')
   })
 
-  it('logs in, selects a returned evaluation, and keeps credentials out of browser storage', async () => {
+  it('enters the automatically selected evaluation and keeps credentials out of browser storage', async () => {
     const runs=[{ id: 'run1', name: 'Thi thử', status: 'ACTIVE' }]
-    vi.spyOn(imageApi, 'dresLogin').mockResolvedValue({ connected: true, username: 'tester', server: 'https://dres.test', evaluation_id: '', evaluations: runs })
+    vi.spyOn(imageApi, 'dresLogin').mockResolvedValue({ connected: true, username: 'tester', server: 'https://dres.test', evaluation_id: 'run1', evaluations: runs })
     vi.spyOn(imageApi, 'dresRuns').mockResolvedValue(runs)
     vi.spyOn(imageApi, 'dresSelect').mockResolvedValue({ connected: true, username: 'tester', server: 'https://dres.test', evaluation_id: 'run1' })
     mount()
@@ -102,14 +108,11 @@ describe('image workbench entry and shortcuts', () => {
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'tester' } })
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'private-password' } })
     fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập DRES' }))
-    const select=await screen.findByRole('combobox', { name: 'Lượt thi DRES' })
-    fireEvent.change(select, { target: { value: 'run1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Vào lượt thi' }))
     expect(await screen.findByRole('heading', { name: 'Khám phá ảnh' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'DRES · tester' })).toBeVisible()
     expect(localStorage.getItem('image-dres-server')).toBe('https://dres.test')
     expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain('private-password')
-    expect(imageApi.dresSelect).toHaveBeenCalledWith('run1', expect.anything())
+    expect(imageApi.dresSelect).not.toHaveBeenCalled()
   })
 
   it('keeps user and assistant turns when chat is collapsed and reopened', async () => {

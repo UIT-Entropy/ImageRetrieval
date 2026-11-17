@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import * as Dialog from '@radix-ui/react-dialog'
-import { LogIn, Send, Sparkles } from 'lucide-react'
+import { LogIn, Sparkles } from 'lucide-react'
 import { imageApi, type DRESSession } from '../api/imageSearch'
 import { Button, Spinner } from '../components/ui'
 
@@ -10,7 +9,7 @@ export function DRESAccess({ children }: { children: (session: DRESSession, acco
   const session = useQuery({ queryKey: ['dres-session'], queryFn: imageApi.dresSession, retry: false })
   const [practice, setPractice] = useState(() => sessionStorage.getItem('image-practice') === 'true')
   const [access, setAccess] = useState(false)
-  const [server, setServer] = useState(() => localStorage.getItem('image-dres-server') ?? '')
+  const [server, setServer] = useState(() => localStorage.getItem('image-dres-server') ?? 'https://dres.2hbread.com')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')
@@ -19,6 +18,10 @@ export function DRESAccess({ children }: { children: (session: DRESSession, acco
   const login = useMutation({ mutationFn: imageApi.dresLogin, onSuccess: value => {
     cache.setQueryData(['dres-session'], value); cache.setQueryData(['dres-runs'], value.evaluations)
     localStorage.setItem('image-dres-server', server.trim()); setPassword(''); setToken('')
+    setEvaluation(value.evaluation_id ?? '')
+    if (value.evaluation_id) {
+      setAccess(false); setPractice(false); sessionStorage.removeItem('image-practice')
+    }
   } })
   const runs = useQuery({ queryKey: ['dres-runs'], queryFn: imageApi.dresRuns, enabled: !!session.data?.connected && (access || !session.data?.evaluation_id), retry: false })
   const select = useMutation({ mutationFn: imageApi.dresSelect, onSuccess: value => {
@@ -48,26 +51,4 @@ export function DRESAccess({ children }: { children: (session: DRESSession, acco
     {[login.error, select.error, logout.error].filter(Boolean).map((error, i) => <p key={i} role="alert" className="image-error">{error?.message}</p>)}
     <Button onClick={() => { setPractice(true); setAccess(false); sessionStorage.setItem('image-practice', 'true') }}>Luyện tập</Button>
   </section></main>
-}
-
-export function DRESSubmit({ imageID, session }: { imageID: string; session: DRESSession }) {
-  const [open, setOpen] = useState(false)
-  const [name, setName] = useState(imageID)
-  const [collection, setCollection] = useState('')
-  const [task, setTask] = useState('')
-  const submit = useMutation({ mutationFn: imageApi.dresSubmit })
-  return <Dialog.Root open={open} onOpenChange={setOpen}>
-    <Button disabled={!session.connected || !session.evaluation_id} onClick={() => { setName(imageID); submit.reset(); setOpen(true) }} title={session.connected ? 'Gửi ảnh đến DRES' : 'Đăng nhập DRES để gửi bài'}><Send size={14} />Gửi DRES</Button>
-    <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content dres-submit stack">
-      <Dialog.Title>Gửi ảnh đến DRES</Dialog.Title><Dialog.Description>{session.server} · {session.username} · Evaluation {session.evaluation_id}</Dialog.Description>
-      <img src={`/api/images/media/${encodeURIComponent(imageID)}?thumbnail=true`} alt={imageID} />
-      <label className="field">Media item<input value={name} onChange={e => setName(e.target.value)} /></label>
-      <label className="field">Collection<input value={collection} onChange={e => setCollection(e.target.value)} /></label>
-      <label className="field">Task ID<input placeholder="Task hiện tại" value={task} onChange={e => setTask(e.target.value)} /></label>
-      <details><summary>Xem payload</summary><pre>{JSON.stringify({ answerSets: [{ ...(task.trim() ? { taskId: task.trim() } : {}), answers: [{ mediaItemName: name.trim(), ...(collection.trim() ? { mediaItemCollectionName: collection.trim() } : {}) }] }] }, null, 2)}</pre></details>
-      {submit.isError && <p role="alert" className="image-error">{submit.error.message}</p>}
-      {submit.data && <p role="status">HTTP {submit.data.http_status} · {submit.data.submission ?? (submit.data.http_status === 202 ? 'Chờ chấm' : 'Đã nhận')} · {submit.data.description}</p>}
-      <div className="row"><Button className="primary" disabled={!name.trim() || submit.isPending || submit.isSuccess} onClick={() => submit.mutate({ image_id: imageID, media_item_name: name.trim(), collection, task_id: task })}>{submit.isPending ? <Spinner /> : <Send size={14} />}Gửi ảnh này</Button><Dialog.Close asChild><Button>Đóng</Button></Dialog.Close></div>
-    </Dialog.Content></Dialog.Portal>
-  </Dialog.Root>
 }
