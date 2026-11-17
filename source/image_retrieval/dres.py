@@ -8,7 +8,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import HTTPException, Request, Response
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 COOKIE = 'image_dres_session'
 TTL = 8 * 3600
@@ -26,7 +26,16 @@ class Selection(BaseModel):
 
 
 class Submission(BaseModel):
-    image_id: str = Field(min_length=1, max_length=200)
+    image_id: str | None = Field(default=None, min_length=1, max_length=200)
+    text: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode='after')
+    def validate_answer(self):
+        has_image = bool(self.image_id and self.image_id.strip())
+        has_text = bool(self.text and self.text.strip())
+        if has_image == has_text:
+            raise ValueError('Gửi đúng một dạng câu trả lời: ảnh hoặc text QA.')
+        return self
 
 
 def server_url(value):
@@ -140,8 +149,11 @@ def install_dres(app, catalog):
     def submit(body: Submission, request: Request):
         session=state(request)
         if not session['evaluation_id']: raise HTTPException(422,'Chọn Evaluation ID trước khi gửi.')
-        if body.image_id not in catalog().index: raise HTTPException(404,'Ảnh không tồn tại.')
-        answer = {'mediaItemName': body.image_id, 'mediaItemCollectionName': 'castle5000'}
+        if body.text is not None:
+            answer = {'text': body.text.strip()}
+        else:
+            if body.image_id not in catalog().index: raise HTTPException(404,'Ảnh không tồn tại.')
+            answer = {'mediaItemName': body.image_id, 'mediaItemCollectionName': 'castle5000'}
         payload = {'answerSets': [{'answers': [answer]}]}
         status,result=remote(session['server'],'POST','/api/v2/submit/'+quote(session['evaluation_id'],safe=''),
             session['token'],payload)

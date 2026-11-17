@@ -51,6 +51,10 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
   const [submitMessage, setSubmitMessage] = useState('')
   const submitting = useRef(false)
   const quickSubmit = useMutation({ mutationFn: imageApi.dresSubmit, retry: false, onSettled: () => { submitting.current = false }, onSuccess: result => setSubmitMessage(`${result.submission ?? 'Đã gửi'}${result.description ? ` · ${result.description}` : ''}`), onError: error => setSubmitMessage(error.message) })
+  const [qaOpen, setQaOpen] = useState(false)
+  const [qaText, setQaText] = useState('')
+  const qaSubmit = useMutation({ mutationFn: (text: string) => imageApi.dresSubmit({ text }), retry: false,
+    onSuccess: result => { setSubmitMessage(`QA · ${result.submission ?? 'Đã gửi'}${result.description ? ` · ${result.description}` : ''}`); setQaOpen(false); setQaText('') } })
   const [preview, setPreview] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState('')
   const [agentInstruction, setAgentInstruction] = useState('')
@@ -176,6 +180,7 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
       <Button className={panel === 'search' ? 'primary sm' : 'sm'} aria-expanded={panel === 'search'} aria-controls="manual-search-panel" onClick={() => setPanel(p => p === 'search' ? null : 'search')}><Search size={14} />Tìm kiếm <kbd>Ctrl S</kbd></Button>
       <Button className={panel === 'agent' ? 'primary sm' : 'sm'} aria-expanded={panel === 'agent'} aria-controls="agent-chat-panel" onClick={() => setPanel(p => p === 'agent' ? null : 'agent')}><Sparkles size={14} />Agent <kbd>Ctrl A</kbd></Button>
       <Button className="sm" onClick={onAccount}>{session.connected ? `DRES · ${session.username}` : 'DRES'}</Button>
+      <Button className="sm" disabled={!session.connected || !session.evaluation_id} title="Nộp câu trả lời QA dạng text" onClick={() => setQaOpen(true)}><Send size={14} />Nộp QA</Button>
       <Button className={onlySaved ? 'primary sm' : 'sm'} onClick={() => { setOnlySaved(v => !v); runSearch(draft, !onlySaved) }}><Star size={14} />Shortlist ({shortlist.length})</Button>
       <Button className="sm" onClick={() => setHistoryOpen(true)}>Lịch sử</Button>
       <Button className="sm" disabled={!shortlist.length} onClick={exportSaved}><Download size={14} />CSV</Button>
@@ -262,7 +267,7 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
             <div className="image-tile-actions" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
               <button className={query.positive_ids?.includes(hit.imageID) ? 'liked' : ''} aria-label={`Like ${hit.imageID}`} aria-pressed={query.positive_ids?.includes(hit.imageID) ?? false} title="Like" onClick={() => feedback(hit.imageID, 'positive_ids')}><ThumbsUp size={15} /></button>
               <button className={query.negative_ids?.includes(hit.imageID) ? 'disliked' : ''} aria-label={`Dislike ${hit.imageID}`} aria-pressed={query.negative_ids?.includes(hit.imageID) ?? false} title="Dislike" onClick={() => feedback(hit.imageID, 'negative_ids')}><ThumbsDown size={15} /></button>
-              <button aria-label={`Submit ${hit.imageID}`} title={session.connected ? 'Submit' : 'Đăng nhập DRES'} disabled={!session.connected || !session.evaluation_id || quickSubmit.isPending} onClick={() => submitImage(hit.imageID)}>{quickSubmit.isPending && quickSubmit.variables?.image_id === hit.imageID ? <Spinner /> : <Send size={15} />}</button>
+              <button aria-label={`Submit ${hit.imageID}`} title={session.connected ? 'Submit' : 'Đăng nhập DRES'} disabled={!session.connected || !session.evaluation_id || quickSubmit.isPending} onClick={() => submitImage(hit.imageID)}>{quickSubmit.isPending && quickSubmit.variables && 'image_id' in quickSubmit.variables && quickSubmit.variables.image_id === hit.imageID ? <Spinner /> : <Send size={15} />}</button>
             </div>
             <footer className="tile-overlay"><span>{hit.source} · {hour(hit.hour)}</span><span>f{hit.frame}</span>{hit.score !== null && <span className="score-chip">{(hit.rerankScore ?? hit.score).toFixed(3)}</span>}</footer>
             {!!hit.constraintCounts?.length && <div className="image-count-evidence">{hit.constraintCounts.slice(0,2).map((f,j) => <span key={j}>{f.label}{f.color ? `/${f.color}` : ''}: {f.count} {f.source === 'metadata' ? '(gốc)' : ''}</span>)}</div>}
@@ -285,6 +290,7 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
     </main>
     <ImageInspector canSubmit={!!session.connected && !!session.evaluation_id && !quickSubmit.isPending} submitting={quickSubmit.isPending} onSubmit={submitImage} submitMessage={submitMessage} id={selected} onClose={() => setSelected(null)} onSelect={setSelected} onSimilar={similar} saved={!!selected && shortlist.includes(selected)} onSave={() => selected && toggleSaved(selected)} />
     <Dialog.Root open={historyOpen} onOpenChange={setHistoryOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content"><Dialog.Title>Lịch sử tìm ảnh</Dialog.Title><Dialog.Description className="muted small">Lưu trên trình duyệt này. Ảnh upload không được lưu lại.</Dialog.Description><div className="stack">{history.length === 0 && <p>Chưa có truy vấn.</p>}{history.map((q, i) => <Button key={i} onClick={() => { setPreview(null); setOnlySaved(false); runSearch(q, false); setHistoryOpen(false) }}>{q.text || q.reference_id || `${q.objects.length} điều kiện object · ${q.day ?? 'mọi ngày'} · ${q.hour_from ?? '…'}–${q.hour_to ?? '…'}h`}</Button>)}</div><Dialog.Close asChild><Button>Đóng</Button></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
+    <Dialog.Root open={qaOpen} onOpenChange={setQaOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content"><Dialog.Title>Nộp câu trả lời QA</Dialog.Title><Dialog.Description className="muted small">Gửi nguyên văn câu trả lời text vào Evaluation đang chọn.</Dialog.Description><form className="stack" onSubmit={event => { event.preventDefault(); if (qaText.trim()) qaSubmit.mutate(qaText.trim()) }}><label className="field">Câu trả lời<textarea autoFocus rows={4} maxLength={4000} value={qaText} onChange={event => setQaText(event.target.value)} placeholder="Tự nhập câu trả lời…" /></label>{qaSubmit.error && <p role="alert" className="image-error">{qaSubmit.error.message}</p>}<div className="row"><Button type="button" onClick={() => setQaOpen(false)}>Đóng</Button><span className="grow" /><Button type="submit" className="primary" disabled={!qaText.trim() || qaSubmit.isPending}>{qaSubmit.isPending ? <Spinner /> : <Send size={14} />}Gửi QA</Button></div></form></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>
 }
 
