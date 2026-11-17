@@ -68,6 +68,7 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
   const fileInput = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLElement>(null)
   const multiModel = health.data?.multiModel
+  const availableModels = health.data?.availableModels ?? Object.keys(embeddingLabels) as EmbeddingModel[]
   const encoderAvailable = !!health.data && (multiModel || health.data.queryEncoder !== 'disabled')
   const upload = useMutation({ mutationFn: imageApi.upload })
 
@@ -182,14 +183,14 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
     </header>
     <main className={`main-content image-workbench ${panel ? `has-${panel}` : ''}`}>
       {panel === 'search' && <aside ref={composerRef} id="manual-search-panel" aria-label="Tìm kiếm thủ công" className="image-composer panel">
-        <div className="row"><h2 className="grow">Tìm ảnh</h2><Button className="icon sm" aria-label="Thu gọn tìm kiếm" onClick={() => setPanel(null)}><X size={15} /></Button></div><span className="small muted">Qwen3-VL · 8B · Ctrl+S bật/tắt</span>
+        <div className="row"><h2 className="grow">Tìm ảnh</h2><Button className="icon sm" aria-label="Thu gọn tìm kiếm" onClick={() => setPanel(null)}><X size={15} /></Button></div><span className="small muted">{health.data?.localRuntime ? 'Local GPU · Qwen2B 4-bit + model nhỏ' : 'Qwen3-VL · Ctrl+S bật/tắt'}</span>
         {health.isError && <p role="alert" className="image-error">Không kết nối được backend ảnh. Chạy search_api.py ở cổng 8100.</p>}
         <form className="stack" onSubmit={event => { event.preventDefault(); runSearch() }}>
             <label className="field">Model tìm kiếm<select value={draft.search_mode ?? 'fast'} onChange={e => setDraft(d => ({ ...d, search_mode: e.target.value as ImageSearchRequest['search_mode'] }))}>
-              <option value="fast">Nhanh · SigLIP2</option><option value="2b">Qwen 2B</option><option value="8b">Qwen 8B</option><option value="ensemble">Ensemble</option>
+              {availableModels.includes('siglip2') && <option value="fast">Nhanh · SigLIP2</option>}{availableModels.includes('qwen2b') && <option value="2b">Qwen 2B</option>}{availableModels.includes('qwen8b') && <option value="8b">Qwen 8B</option>}<option value="ensemble">Ensemble</option>
             </select></label>
             {draft.search_mode === 'ensemble' && <div className="row wrap">
-              {(Object.entries(embeddingLabels) as [EmbeddingModel, string][]).map(([name, label]) => {
+              {(Object.entries(embeddingLabels) as [EmbeddingModel, string][]).filter(([name]) => availableModels.includes(name)).map(([name, label]) => {
                 const selected = draft.embedding_models ?? defaultEnsemble
                 const checked = selected.includes(name)
                 return <label key={name} className="row small"><input type="checkbox" checked={checked}
@@ -199,7 +200,7 @@ function ImageSearchWorkbench({ session, onAccount }: { session: DRESSession; on
             </div>}
             <label className="field">Reranker<select value={draft.rerank_model ?? (draft.rerank ? '2b' : 'off')}
               onChange={e => setDraft(d => ({ ...d, rerank_model: e.target.value as ImageSearchRequest['rerank_model'] }))}>
-              <option value="off">Tắt</option><option value="2b">Qwen 2B</option><option value="8b">Qwen 8B</option>
+              <option value="off">Tắt</option><option value="2b">Qwen 2B</option>{!health.data?.localRuntime && <option value="8b">Qwen 8B</option>}
             </select></label>
           <label className="field">Top K · số ảnh trả về<select value={draft.limit ?? 20}
             onChange={e => setDraft(d => ({ ...d, limit: Number(e.target.value), offset: 0 }))}>

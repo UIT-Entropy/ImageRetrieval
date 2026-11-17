@@ -18,17 +18,23 @@ python source/image_retrieval/download_data.py
 
 Lệnh tải data lấy bộ Castle5000 đã xử lý (5.000 ảnh, metadata, object/color và embedding) vào thư mục local. Không cần chạy lại indexing nếu dùng artifact public hiện có.
 
-## 2. Chạy toàn bộ trên GPU laptop
+## 2. Chạy model trên GPU laptop
 
-Cài PyTorch CUDA phù hợp với driver/GPU, sau đó:
+Local dùng multi-index đã dựng ở mục 3.2; không nạp Qwen8B. Cài PyTorch CUDA phù hợp driver/GPU, sau đó:
 
 ```powershell
-python -m pip install -r source/image_retrieval/requirements-gpu.txt
+py -3.11 -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+py -3.11 -m pip install -r source/image_retrieval/requirements-gpu.txt
+```
+
+Trong `.env`, đặt `IMAGE_MULTI_INDEX` tới index local và giữ `IMAGE_LOCAL_MODEL_CACHE=2`. Qwen2B dùng NF4 4-bit; SigLIP2, EVA-CLIP và DFN-CLIP chạy FP16. Local chỉ cung cấp Qwen2B và các model nhỏ; Qwen8B chỉ có trong Kaggle profile.
+
+```powershell
 python source/image_retrieval/serve.py --profile local --smoke
 python source/image_retrieval/serve.py --profile local
 ```
 
-API và UI chạy tại **http://127.0.0.1:8100/images**. Cấu hình VRAM/RAM và lượng tử hóa trong `.env`. Lệnh `--smoke` xác nhận model nạp được, encode query và rerank thử trước khi mở web.
+Mở **http://127.0.0.1:8100/images**. Backend giữ tối đa hai model trong VRAM và tự giải phóng model cũ nếu thiếu bộ nhớ; đổi model lần đầu có thể cần thời gian nạp. Nếu gặp CUDA OOM, đặt `IMAGE_LOCAL_MODEL_CACHE=1` rồi khởi động lại.
 
 ## 3. Chạy API local, dùng GPU Kaggle
 

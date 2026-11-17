@@ -66,6 +66,40 @@ def load_model(name, gpu):
     return ContrastiveEncoder(spec, f'cuda:{gpu}')
 
 
+def load_local_model(name, gpu=0):
+    """Load a local query model; the 8B variants are intentionally Kaggle-only."""
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError('Local image models require a CUDA GPU')
+    if name in (EMBED_8B, RERANK_8B):
+        raise ValueError('Qwen 8B is only available through the Kaggle profile')
+    if name in (EMBED_2B, RERANK_2B):
+        from transformers import BitsAndBytesConfig
+
+        options = {
+            'device_map': {'': gpu},
+            'low_cpu_mem_usage': True,
+            'quantization_config': BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type='nf4',
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            ),
+        }
+        spec = MODELS[name]
+        if name == EMBED_2B:
+            from pipeline import QwenEncoder
+
+            return QwenEncoder(spec, load_options=options)
+        from reranker import QwenReranker
+
+        return QwenReranker(spec['model_id'], spec['revision'], options)
+    if name in SMALL_MODELS:
+        return ContrastiveEncoder(MODELS[name], f'cuda:{gpu}')
+    raise ValueError(f'Unsupported local model: {name}')
+
+
 class ContrastiveEncoder:
     def __init__(self, spec, device):
         import torch

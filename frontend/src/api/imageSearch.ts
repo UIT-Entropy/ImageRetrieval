@@ -24,7 +24,7 @@ export type ImageSearchRequest = {
 }
 export type ImageResults = { items: ImageHit[]; total: number; ranked: boolean; reranked?: boolean; failedModels?: EmbeddingModel[]; offset: number; limit: number }
 export type ImageFacets = { days: string[]; sources: string[]; labels: string[]; colors: string[]; hours: number[] }
-export type ImageHealth = { status: string; images: number; objects: number; queryEncoder: string; queryReranker?: string; model: string; multiModel?: boolean }
+export type ImageHealth = { status: string; images: number; objects: number; queryEncoder: string; queryReranker?: string; model: string; multiModel?: boolean; localRuntime?: boolean; availableModels?: EmbeddingModel[] }
 export type AgentAnswer = { model: string; engine?: 'local' | 'cache' | 'luna'; usage?: { input_tokens?: number; output_tokens?: number }; message: string; warnings: string[]; needs_clarification: boolean; query: ImageSearchRequest; elapsedMs: number }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

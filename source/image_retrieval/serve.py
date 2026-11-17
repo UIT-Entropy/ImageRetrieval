@@ -11,10 +11,19 @@ ROOT=Path(__file__).resolve().parents[2]
 
 def configure(profile):
     load_dotenv(ROOT/'.env',override=False)
-    if profile == 'multi':
+    if profile in ('multi', 'local') and os.environ.get('IMAGE_MULTI_INDEX'):
         if not os.environ.get('IMAGE_MULTI_INDEX'):
             raise RuntimeError('Set IMAGE_MULTI_INDEX to the directory created by build_index.py')
+        os.environ['IMAGE_RUNTIME_MODE'] = 'local' if profile == 'local' else 'remote'
+        if profile == 'local':
+            os.environ['IMAGE_ENCODER_MODE'] = 'disabled'
+            os.environ['IMAGE_RERANKER_MODE'] = 'disabled'
+            return
         return
+    if profile == 'local':
+        raise RuntimeError('Local mode uses the multi-model index. Set IMAGE_MULTI_INDEX to the directory created by build_index.py')
+    if profile == 'multi':
+        raise RuntimeError('Set IMAGE_MULTI_INDEX to the directory created by build_index.py')
     mode='local' if profile=='local' else 'remote'
     os.environ['IMAGE_ENCODER_MODE']=mode
     os.environ['IMAGE_RERANKER_MODE']=mode
@@ -33,7 +42,17 @@ def main():
     args=parser.parse_args()
     configure(args.profile)
     if args.smoke and args.profile == 'multi':
-        parser.error('Start the multi API and benchmark the search endpoint')
+        parser.error('Start the Kaggle multi API and benchmark the search endpoint')
+    if args.smoke and args.profile == 'local':
+        from local_runtime import LocalModelRuntime
+        runtime=LocalModelRuntime()
+        model=os.environ.get('IMAGE_LOCAL_SMOKE_MODEL','siglip2')
+        try:
+            result=runtime.execute(model,'encode','A person in a kitchen.',None)
+            print({'model':model,'embedding_dimension':len(result['vector']),'status':'ok'})
+        finally:
+            runtime.close()
+        return
     if args.smoke:
         from search_api import Catalog, QueryEncoder, HERE
         from reranker import GPUModels, QueryReranker

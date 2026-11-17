@@ -306,11 +306,17 @@ def create_app(artifacts=None, data=None):
             active = root / UUID(manifest['generation']).hex
         app.state.catalog = Catalog(Path(artifacts), Path(data), active) if active else Catalog(Path(artifacts), Path(data))
         app.state.multi = None
+        app.state.local_runtime = None
         if active:
             from multi_search import MultiSearch
+            local_runtime = None
+            if os.environ.get('IMAGE_RUNTIME_MODE') == 'local':
+                from local_runtime import LocalModelRuntime
+                local_runtime = LocalModelRuntime()
+                app.state.local_runtime = local_runtime
 
             client = QdrantClient(path=str(active / 'qdrant'))
-            app.state.multi = MultiSearch(app.state.catalog, client, HERE / '.work')
+            app.state.multi = MultiSearch(app.state.catalog, client, HERE / '.work', local_runtime)
         from reranker import GPUModels, QueryReranker
         app.state.gpu = GPUModels(app.state.catalog.config['embedding'])
         app.state.encoder = QueryEncoder(app.state.catalog,app.state.gpu)
@@ -344,7 +350,10 @@ def create_app(artifacts=None, data=None):
         cat = catalog()
         return {'status': 'ok', 'images': len(cat.ids), 'objects': sum(map(len, cat.objects.values())),
                 'queryEncoder': app.state.encoder.mode, 'queryReranker':app.state.reranker.mode,
-                'model': cat.config['embedding']['model_id'], 'multiModel': bool(app.state.multi)}
+                'model': cat.config['embedding']['model_id'], 'multiModel': bool(app.state.multi),
+                'localRuntime': app.state.local_runtime is not None,
+                'availableModels': (['qwen2b', 'siglip2', 'eva', 'dfn'] if app.state.local_runtime is not None else
+                                    ['qwen8b', 'qwen2b', 'siglip2', 'eva', 'dfn'])}
 
     @app.get('/api/images/facets')
     def facets():

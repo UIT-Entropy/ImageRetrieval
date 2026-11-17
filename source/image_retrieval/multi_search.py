@@ -19,7 +19,7 @@ from reranker import validate_scores
 
 
 class MultiSearch:
-    def __init__(self, catalog, client, work):
+    def __init__(self, catalog, client, work, local_runtime=None):
         self.catalog = catalog
         self.client = client
         self.work = work
@@ -28,6 +28,7 @@ class MultiSearch:
             raise ValueError('IMAGE_GPU_WORKERS must be 2 or 3')
         self.routes_by_model = self.routes(count)
         self.executor = ThreadPoolExecutor(max_workers=10)
+        self.local_runtime = local_runtime
         # Each executor thread gets its own keep-alive connection pool. requests.Session
         # is not shared across threads, and the Kaggle tunnel benefits from reusing TLS.
         self._session_local = threading.local()
@@ -48,6 +49,8 @@ class MultiSearch:
 
     def close(self):
         self.executor.shutdown(wait=True, cancel_futures=True)
+        if self.local_runtime is not None:
+            self.local_runtime.close()
         with self._sessions_lock:
             sessions, self._sessions = self._sessions, []
         for session in sessions:
@@ -86,6 +89,8 @@ class MultiSearch:
         return routes
 
     def worker(self, name, operation, text, image, documents=()):
+        if self.local_runtime is not None:
+            return self.local_runtime.execute(name, operation, text, image, documents)
         slot, group = self.routes_by_model[name]
         descriptor = self.work / f'worker_{slot}_{group}.json'
         if not descriptor.is_file():
@@ -165,19 +170,30 @@ class MultiSearch:
             return catalog.results(query, [], {}, ranked=True)
         names = {'fast': ('siglip2',), '2b': (EMBED_2B,), '8b': (EMBED_8B,),
                  'ensemble': tuple(query.embedding_models or SMALL_MODELS)}[query.search_mode or 'fast']
+        if self.local_runtime is not None:
+            unsupported = [name for name in names if not self.local_runtime.supports(name)]
+            rerank_mode = query.rerank_model or ('2b' if query.rerank else 'off')
+            if rerank_mode == '8b':
+                unsupported.append(RERANK_8B)
+            if unsupported:
+                raise HTTPException(422, 'Local mode không chạy Qwen 8B; chọn Qwen2B hoặc model nhỏ.')
         stored = {}
         if ids:
             stored = {int(p.id): p.vector for p in self.client.retrieve(
                 COLLECTION, ids=list({catalog.index[i] for i in ids}), with_vectors=list(names))}
         failed = []
+        model_errors = {}
         rankings = []
         futures = {name: self.executor.submit(self.rank, name, query, image, candidates, stored) for name in names}
         for name, future in futures.items():
             try:
                 rankings.append(future.result())
-            except (OSError, ValueError, requests.RequestException):
+            except (OSError, ValueError, requests.RequestException) as exc:
                 failed.append(name)
+                model_errors[name] = exc
         if not rankings:
+            if self.local_runtime is not None and model_errors:
+                raise HTTPException(503, '; '.join(str(exc) for exc in model_errors.values()))
             raise HTTPException(503, 'Model chưa sẵn sàng: ' + ', '.join(failed))
         if len(rankings) == 1:
             scores = dict(rankings[0])
@@ -201,6 +217,8 @@ class MultiSearch:
                                      [catalog.image_path(catalog.ids[i]) for i in head])
                 rerank_scores = dict(zip(head, validate_scores(result['scores'], len(head))))
             except (OSError, ValueError, requests.RequestException) as exc:
+                if self.local_runtime is not None:
+                    raise HTTPException(503, str(exc)) from exc
                 raise HTTPException(503, f'Model chưa sẵn sàng: {rerank_name}') from exc
             order[:len(head)] = sorted(head, key=lambda i: -rerank_scores[i])
         result = catalog.results(query, order, scores, ranked=True)
