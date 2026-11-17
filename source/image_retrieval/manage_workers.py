@@ -17,7 +17,9 @@ from model_registry import WORKERS, fingerprint
 def credentials(slot):
     load_dotenv(ROOT / '.env', override=True)
     suffix = '' if slot == 1 else f'_{slot}'
-    return os.environ.get(f'KAGGLE_USERNAME{suffix}'), os.environ.get(f'KAGGLE_API_TOKEN{suffix}')
+    username = os.environ.get(f'KAGGLE_USERNAME{suffix}') or os.environ.get('KAGGLE_USERNAME')
+    token = os.environ.get(f'KAGGLE_API_TOKEN{suffix}') or os.environ.get('KAGGLE_API_TOKEN')
+    return username, token
 
 
 def prepare(slot, group, username, resume=None):

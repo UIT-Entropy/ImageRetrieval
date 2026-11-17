@@ -45,7 +45,7 @@ API, SQLite/Qdrant và UI chạy local; model chạy trên Kaggle GPU. Cần Kag
 - **2 API:** slot 1 chạy Qwen3-VL 8B embedding + reranker; slot 2 chạy Qwen3-VL 2B embedding + reranker và SigLIP2, EVA-CLIP, DFN-CLIP.
 - **3 API:** slot 1 chạy Qwen3-VL 8B; slot 2 chạy Qwen3-VL 2B embedding + reranker; slot 3 chạy SigLIP2, EVA-CLIP, DFN-CLIP.
 
-Mỗi slot dùng một tài khoản Kaggle. Điền thông tin theo suffix: slot 1 dùng `KAGGLE_USERNAME`/`KAGGLE_API_TOKEN`, slot 2 dùng `_2`, slot 3 dùng `_3`. Notebook private bật Internet và GPU T4; lệnh push sẽ tạo notebook mới mang tên ngẫu nhiên trong tài khoản tương ứng.
+Có thể dùng cùng một tài khoản Kaggle cho nhiều notebook. Slot 1 dùng `KAGGLE_USERNAME`/`KAGGLE_API_TOKEN`; slot 2 và 3 mặc định dùng chung credential này. Nếu cần tách tài khoản, điền thêm `KAGGLE_USERNAME_2`/`KAGGLE_API_TOKEN_2` hoặc `_3`. Notebook private bật Internet và GPU T4; lệnh push tạo notebook mới trong tài khoản tương ứng.
 
 ### 3.2. Tạo index cho các embedding model
 
@@ -117,8 +117,7 @@ codex login status
 ## 5. Tìm ảnh với nhiều model trên Kaggle
 
 Dùng Python 3.11 hoặc 3.12. Cài lại requirements API sau khi pull để có Qdrant.
-Trong `.env`, đặt `IMAGE_GPU_WORKERS=2` hoặc `3`, điền Kaggle username và token theo slot.
-Slot 1 dùng `KAGGLE_USERNAME` và `KAGGLE_API_TOKEN`; slot 2 và 3 dùng hậu tố `_2` và `_3`.
+Trong `.env`, đặt `IMAGE_GPU_WORKERS=2` hoặc `3`, điền `KAGGLE_USERNAME` và `KAGGLE_API_TOKEN`. Các slot bổ sung dùng credential này mặc định; có thể đặt thêm các biến hậu tố `_2` và `_3` để dùng tài khoản khác.
 
 Chạy job nhúng lại ảnh trước khi chạy các worker phục vụ tìm kiếm.
 
